@@ -1,0 +1,5 @@
+# Fins de ligne Unix pour tout (indispensable pour les scripts lances dans Docker)
+* text=auto eol=lf
+*.jar binary
+*.png binary
+*.pdf binary

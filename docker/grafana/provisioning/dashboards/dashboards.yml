@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: maintenance
+    folder: Maintenance predictive
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

@@ -1,0 +1,245 @@
+# =============================================================================
+#  Maintenance predictive de moteurs industriels - plateforme Big Data
+#  Lancement : docker compose up -d --build
+# =============================================================================
+#  Interfaces web :
+#    Kafka UI   http://localhost:8080
+#    Spark      http://localhost:8082
+#    HDFS       http://localhost:9870
+#    Airflow    http://localhost:8088   (admin / admin)
+#    Grafana    http://localhost:3000   (admin / admin)
+# =============================================================================
+
+x-spark-common: &spark-common
+  build:
+    context: ./docker
+    dockerfile: spark/Dockerfile
+  image: pm-spark:latest
+  environment:
+    SPARK_CONF_DIR: /opt/spark-conf
+    PYSPARK_PYTHON: python3
+  volumes:
+    - ./docker/spark/spark-defaults.conf:/opt/spark-conf/spark-defaults.conf:ro
+    - ./spark_jobs:/opt/project/spark_jobs
+    - ./data:/opt/project/data
+
+x-airflow-common: &airflow-common
+  build:
+    context: ./docker
+    dockerfile: airflow/Dockerfile
+  image: pm-airflow:latest
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__WEBSERVER__SECRET_KEY: pm-secret-key-change-me
+    SPARK_CONF_DIR: /opt/spark-conf
+    PYSPARK_PYTHON: python3
+    SPARK_MASTER_URL: spark://spark-master:7077
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./spark_jobs:/opt/project/spark_jobs
+    - ./reports:/opt/airflow/reports
+    - ./docker/spark/spark-defaults.conf:/opt/spark-conf/spark-defaults.conf:ro
+    - airflow-logs:/opt/airflow/logs
+  user: "50000:0"
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+
+  # ---------------------------------------------------------------- Ingestion
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: kafka
+    ports:
+      - "9092:9092"          # acces depuis Windows (producteur local)
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:29092,PLAINTEXT_HOST://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  kafka-init:                # cree le topic puis s'arrete
+    image: apache/kafka:3.8.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092
+      --create --if-not-exists --topic capteurs_moteurs
+      --partitions 3 --replication-factor 1 &&
+      echo 'Topic capteurs_moteurs pret'"
+    restart: "no"
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    container_name: kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # --------------------------------------------------------------- Data Lake
+  # HDFS (MinIO n'est plus distribue en image Docker depuis fin 2025)
+  namenode:
+    image: apache/hadoop:3.4.1
+    container_name: namenode
+    hostname: namenode
+    user: root
+    command: ["hdfs", "namenode"]
+    ports:
+      - "9870:9870"          # interface web HDFS
+    env_file: ./docker/hadoop/config
+    environment:
+      ENSURE_NAMENODE_DIR: /hadoop/dfs/name/nn   # formate HDFS au premier lancement
+      HDFS_NAMENODE_USER: root
+      HADOOP_HEAPSIZE_MAX: 512m
+    volumes:
+      - hdfs-name:/hadoop/dfs/name
+
+  datanode:
+    image: apache/hadoop:3.4.1
+    container_name: datanode
+    hostname: datanode
+    user: root
+    command: ["hdfs", "datanode"]
+    env_file: ./docker/hadoop/config
+    environment:
+      HDFS_DATANODE_USER: root
+      HADOOP_HEAPSIZE_MAX: 512m
+    volumes:
+      - hdfs-data:/hadoop/dfs/data
+    depends_on:
+      - namenode
+
+  hdfs-init:                 # cree les zones du Data Lake puis s'arrete
+    image: apache/hadoop:3.4.1
+    user: root
+    env_file: ./docker/hadoop/config
+    depends_on:
+      - namenode
+      - datanode
+    entrypoint: ["/bin/bash", "-c"]
+    command: >
+      "sleep 15 && hdfs dfsadmin -safemode wait &&
+      hdfs dfs -mkdir -p /datalake/bronze /datalake/silver /datalake/gold /datalake/models &&
+      hdfs dfs -ls /datalake && echo 'Data Lake HDFS pret'"
+    restart: on-failure
+
+  # -------------------------------------------------------------- Traitement
+  spark-master:
+    <<: *spark-common
+    container_name: spark-master
+    hostname: spark-master
+    command: spark-class org.apache.spark.deploy.master.Master --host spark-master --port 7077 --webui-port 8080
+    ports:
+      - "8082:8080"          # interface Spark
+      - "7077:7077"
+
+  spark-worker:
+    <<: *spark-common
+    container_name: spark-worker
+    hostname: spark-worker
+    command: spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077 --cores 2 --memory 3g
+    depends_on:
+      - spark-master
+
+  # ----------------------------------------- Base PostgreSQL (Airflow + Gold)
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ----------------------------------------------------------- Orchestration
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate &&
+        airflow users create --username admin --password admin \
+          --firstname Admin --lastname PM --role Admin --email admin@example.com || true
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    command: webserver
+    ports:
+      - "8088:8080"
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    hostname: airflow-scheduler   # les executors Spark joignent le driver ici
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ------------------------------------------------------------ Restitution
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  kafka-data:
+  hdfs-name:
+  hdfs-data:
+  postgres-data:
+  airflow-logs:
+  grafana-data:

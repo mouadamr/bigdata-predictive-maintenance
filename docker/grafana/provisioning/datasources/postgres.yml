@@ -1,0 +1,14 @@
+apiVersion: 1
+datasources:
+  - name: Maintenance-Gold
+    type: grafana-postgresql-datasource
+    uid: pm-postgres
+    url: postgres:5432
+    user: maintenance
+    secureJsonData:
+      password: maintenance
+    jsonData:
+      database: maintenance
+      sslmode: disable
+      postgresVersion: 1600
+    isDefault: true
