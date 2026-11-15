@@ -20,7 +20,8 @@ C-MAPSS -> Producteur Python -> Kafka (capteurs_moteurs) -> Spark Structured Str
 | Mouad AAMER | 1. Sources de donnees et ingestion Kafka | `producer/`, `notebooks/` |
 | Bader Alouli | 2. Data Lake (HDFS) et Lakehouse Hudi | `spark_jobs/bronze_ingest.py`, `spark_jobs/silver_hudi.py` |
 | Mohamed Bouabidi | 3. Traitements Spark (SQL, DataFrames, MLlib) | `spark_jobs/features.py`, `train_models.py`, `gold_scoring.py` |
-| Youssef Abouelmahassine | 4. Orchestration Airflow et dashboard Grafana | `dags/`, `grafana/` |
+| Youssef Abouelmahassine | 4. Orchestration Airflow (DAG, controle qualite, rapport) | `dags/`, `spark_jobs/quality_check.py` |
+| Mahmoud Charabara | 5. Restitution : export PostgreSQL et dashboard Grafana | `spark_jobs/export_postgres.py`, `grafana/dashboards/` |
 | Tous | Docker Compose et integration | `docker-compose.yml`, `docker/` |
 
 ## Prerequis
@@ -58,8 +59,8 @@ docker/                images Spark et Airflow, config Spark, HDFS, PostgreSQL, 
 data/raw/              fichiers C-MAPSS (non versionnes)
 producer/              producteur Kafka (partie 1)
 spark_jobs/            jobs Spark Bronze / Silver / Gold / ML (parties 2 et 3)
-dags/                  DAG Airflow (partie 4)
-grafana/dashboards/    tableaux de bord (partie 4)
+dags/                  DAG Airflow + rapport de maintenance (partie 4)
+grafana/dashboards/    tableaux de bord (partie 5)
 notebooks/             exploration des donnees
 reports/               rapports de maintenance generes
 docs/                  cahier des charges, rapport, presentation

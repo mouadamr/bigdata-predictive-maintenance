@@ -10,6 +10,8 @@
 | `features.py`      | Variables glissantes (Spark SQL, fenetres 5/10/20 cycles) + labels RUL / etat | Mohamed Bouabidi (partie 3) |
 | `train_models.py`  | MLlib : GBTRegressor (RUL) + classification de l'etat | Mohamed Bouabidi (partie 3) |
 | `gold_scoring.py`  | Tables Hudi Gold : `gold_sante_moteurs` (etat actuel) + `gold_predictions` (historique) | Mohamed Bouabidi (partie 3) |
+| `quality_check.py` | Controle qualite de la table Silver avant reentrainement | Youssef Abouelmahassine (partie 4) |
+| `export_postgres.py` | Gold -> PostgreSQL (`flotte_sante`, `predictions_rul`, `model_metrics`) pour Grafana | Mahmoud Charabara (partie 5) |
 
 ## Lancer un job
 
